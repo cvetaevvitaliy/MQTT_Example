@@ -3,7 +3,7 @@ EXECUTABLE = ${PROJECT}
 CC=gcc
 CFLAGS += -std=c99 -O2  -Wall -c -Werror
 LIBS += -lmosquitto
-SOURCES=main.c
+SOURCES=main.c tiny-json.c
 INCLUDE_DIRS=-I .
 OBJECTS=$(SOURCES:.c=.o)
 
