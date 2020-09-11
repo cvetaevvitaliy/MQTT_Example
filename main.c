@@ -5,12 +5,29 @@
 #include <sys/types.h>
 #include <signal.h>
 #include <unistd.h>
+#if defined(ENABLE_LOG)
+#include <syslog.h>
+#endif
 
 #include <mosquitto.h>
 #include "tiny-json.h"
 
+
 #define mqtt_host           "127.0.0.1"
 #define mqtt_port           (1883)
+
+/** for example global variable  */
+static enum {
+    SSLMode0,
+    SSLMode1,
+    SSLMode2
+
+}SSLMode_e; /** 0:disable, 1:CA Mode, 2: PSK Mode */
+
+static char strTLCertSPW[37] = "05155853"; // SSL/TLS provate key or pre-shared-key
+static char strDeviceID[37] = "00000001-0000-0000-0000-305A3A770020"; //Target device unique ID
+static char strConnID[256] = "0e95b665-3748-46ce-80c5-bdd423d7a8a5:631476df-31a5-4b66-a4c6-bd85228b9d27"; //broker connection ID
+static char strConnPW[64] = "f3a2342t4oejbefc78cgu080ia"; //MQTT broker connection password
 
 static bool run = true;
 static bool print_dump = false;
@@ -19,6 +36,8 @@ static bool Json_parser_process(char *payload);
 static bool Json_parser_settings(char *payload);
 static void dump( json_t const* json );
 
+
+static int Password_check_callback(char *buf, int size, int rwflag, void *userdata);
 
 
 static void Handle_signal(int s)
@@ -35,6 +54,16 @@ static void Handle_signal(int s)
     }
     run = false;
 }
+
+
+static void Mosquitto_log_callback(struct mosquitto *mosq, void *obj, int level, const char* str){
+
+    printf(" Mosquitto LOG: %s\n", str);
+#if defined(ENABLE_LOG)
+    syslog(LOG_DEBUG, "%s", str);
+#endif
+}
+
 
 static void Connect_callback(struct mosquitto *mosq, void *obj, int result)
 {
@@ -65,11 +94,18 @@ static void Message_callback(struct mosquitto *mosq, void *obj, const struct mos
 
 }
 
+
 int main(int argc, char *argv[])
 {
     char clientid[15];
     int rc = 0;
     struct mosquitto *mosq;
+    SSLMode_e  = SSLMode0;
+    bool authentication = false;
+
+#if defined(ENABLE_LOG)
+    openlog("MQTT", 0, LOG_USER);
+#endif
 
     signal(SIGINT, Handle_signal); //  Interrupt signal
     signal(SIGTERM, Handle_signal); // Termination signal
@@ -79,6 +115,40 @@ int main(int argc, char *argv[])
     sprintf(clientid, "PID=%d", getpid()); // for example client_id - use pid process
     printf("%s\n",clientid);
     mosq = mosquitto_new(clientid, true, 0);
+    mosquitto_log_callback_set(mosq, Mosquitto_log_callback);
+
+
+    /** Setup connection SSL/TLS,
+     * SSLMode=0 disable the SSL/TLS.
+     * SSLMode=1 certificate based SSL/TLS.
+     * If the server you are connecting to requires clients to provide a
+     * certificate, define certfile and keyfile with your client certificate and
+     * private key. If your private key is encrypted, provide a password callback
+     * function or you will have to enter the password at the command line.
+     * SSLMode=2  pre-shared-key based TLS.
+     * If the server you are connecting to provide a pre-shared-key, define the pre-shared-key and an ID with your client.
+     * private key.
+     */
+    switch (SSLMode_e) {
+        case SSLMode1:
+            mosquitto_tls_insecure_set(mosq, true);
+            mosquitto_tls_set(mosq, "server.crt", NULL, "ca.crt", "ca.key", Password_check_callback);
+            break;
+        case SSLMode2:
+            mosquitto_tls_psk_set(mosq, strTLCertSPW, strDeviceID, NULL);
+            break;
+        default:
+            break;
+    }
+
+    /** Setup MQTT connection ID and Password */
+    if (authentication) {
+        if (strlen(strConnID) > 0 && strlen(strConnPW) > 0)
+            mosquitto_username_pw_set(mosq, strConnID, strConnPW);
+        /*reset will message*/
+        mosquitto_will_clear(mosq);
+    }
+
 
     if(mosq){
         mosquitto_connect_callback_set(mosq, Connect_callback); // callback is called when connecting to the broker
@@ -102,6 +172,9 @@ int main(int argc, char *argv[])
     }
 
     mosquitto_lib_cleanup();
+#if defined(ENABLE_LOG)
+    closelog();
+#endif
     return rc;
 }
 
@@ -197,7 +270,6 @@ static bool Json_parser_process(char *payload){
 }
 
 
-
 static void dump( json_t const* json ) {
 
     jsonType_t const type = json_getType( json );
@@ -232,4 +304,25 @@ static void dump( json_t const* json ) {
 
     printf( "%s", type == JSON_OBJ? " }": " ]" );
 
+}
+
+
+/** password check callback function to handle SSL/TLS private password */
+static int Password_check_callback(char *buf, int size, int rwflag, void *userdata)
+{
+    int length = 0;
+    if(!buf)
+        return 0;
+    length = strlen(strTLCertSPW);
+    memset(buf, 0, size);
+    if(length+1 >= size)
+    {
+        strncpy(buf, strTLCertSPW, size);
+        return size;
+    }
+    else
+    {
+        strncpy(buf, strTLCertSPW, length + 1);
+        return length;
+    }
 }
